@@ -1,4 +1,3 @@
-    #
 # Licensed to the Apache Software Foundation (ASF) under one or more
 # contributor license agreements.  See the NOTICE file distributed with
 # this work for additional information regarding copyright ownership.
@@ -23,36 +22,67 @@ This example requires NumPy (http://www.numpy.org/).
 from __future__ import print_function
 
 import sys
-
 import numpy as np
+from random import random
 from time import time
 from pyspark import SparkContext
 from pyspark.mllib.clustering import KMeans
 
-def parseVector(line):
-    # return np.array([float(x) for x in line.split(' ')])
-    return np.array([np.array([float(y) for y in x.split(',')])
-                                        for x in line.split('|')])
+# Format: userId movieId|rating,movieId|rating,movieId|rating...
+def parseFile(line):
+    myFormat = ""
+    flag = False
+
+    for i in range(len(line)):
+        myFormat += str(line[i])
+        flag = not flag
+        if i < len(line) - 1:
+            if flag:
+                myFormat += "|"
+            else:
+                myFormat += ","
+
+    return myFormat
+
+def parseDataset(file):
+    lines = file.map(lambda line: line.split(',')[:3]) \
+                    .map(lambda line: (line[0], line[1:])) \
+                    .reduceByKey(lambda value1, value2: value1 + value2) \
+                    .sortByKey() \
+                    .map(lambda line: str(line[0]) + ' ' + parseFile(line[1]))
+    return lines
+
+def movieIdList(file):
+    lines = file.map(lambda line: line.split(',')[1]) \
+                .collect()
+
+    movieIds = {}
+    count = 0
+
+    # Map the films to be able to identify them in the centroids
+    for i in range(len(lines)):
+        movieId = int(lines[i])
+        if not movieId in movieIds:
+            movieIds[movieId] = count
+            count += 1
+
+    return movieIds
+
+# Create a centroid with random valoes from 0 to 5
+def initializeCentroid(size, limit):
+    centroid = [float("{0:.1f}".format(random() * limit)) for i in range(size)]
+    return centroid
+
+# Initialize all centroids for the KMeans
+def generateInitialCentroids(size, n):
+    centroids = [initializeCentroid(size, 5) for i in range(n)]
+    return centroids
 
 if __name__ == "__main__":
-    if len(sys.argv) != 3:
-        print("Usage: kmeans <file> <k>", file=sys.stderr)
-        exit(-1)
-
     sc = SparkContext(appName="KMeans")
-    lines = sc.textFile(sys.argv[1])
+    ratings = sc.textFile("hdfs://localhost:9000/user/sebastian/dataset_small/ratings.csv")
 
-    data = lines.map(parseVector)
-    k = int(sys.argv[2])
-
-    start = time()
-    model = KMeans.train(data, k)
-    end = time()
-    elapsed_time = end - start
-
-    print("Final centers: " + str(model.clusterCenters))
-    print("Total Cost: " + str(model.computeCost(data)))
-    print("Value of K: " + str(k))
-    print("Elapsed time: %0.10f seconds." % elapsed_time)
+    data = parseDataset(ratings)
+    sharedData = sc.broadcast(movieIdList(ratings))
 
     sc.stop()
