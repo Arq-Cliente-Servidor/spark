@@ -23,10 +23,11 @@ from __future__ import print_function
 
 import sys
 import numpy as np
+
 from random import random
 from time import time
 from pyspark import SparkContext
-from pyspark.mllib.clustering import KMeans
+from pyspark.mllib.clustering import KMeans, KMeansModel
 
 # Format: userId movieId|rating,movieId|rating,movieId|rating...
 def parseFile(line):
@@ -70,7 +71,7 @@ def movieIdList(file):
 
 # Create a centroid with random valoes from 0 to 5
 def initializeCentroid(size, limit):
-    centroid = [float("{0:.1f}".format(random() * limit)) for i in range(size)]
+    centroid = np.array([float("{0:.1f}".format(random() * limit)) for i in range(size)])
     return centroid
 
 # Initialize all centroids for the KMeans
@@ -78,11 +79,51 @@ def generateInitialCentroids(size, n):
     centroids = [initializeCentroid(size, 5) for i in range(n)]
     return centroids
 
+def createPoint(list, sharedData):
+    point = np.zeros(len(sharedData.value))
+    for i in range(len(list)):
+        movieId, rating = map(float, list[i].split('|'))
+        if movieId in sharedData.value:
+            point[sharedData.value[movieId]] = rating
+    return point
+
+# generate the points for the KMeans
+def generatePoints(file, sharedData):
+    points = file.map(lambda line: line.split()[1]) \
+                .map(lambda line: line.split(',')) \
+                .map(lambda line: createPoint(line, sharedData))
+    return points
+
 if __name__ == "__main__":
+    if len(sys.argv) != 3:
+        print("Usage: kmeans <k> <maxIterations>", file=sys.stderr)
+        exit(-1)
+
     sc = SparkContext(appName="KMeans")
-    ratings = sc.textFile("hdfs://localhost:9000/user/sebastian/dataset_small/ratings.csv")
+    lines = sc.textFile("hdfs://localhost:9000/user/sebastian/dataset_small/ratings.csv")
 
-    data = parseDataset(ratings)
-    sharedData = sc.broadcast(movieIdList(ratings))
+    # Formatting data
+    ratings = parseDataset(lines)
+    sharedData = sc.broadcast(movieIdList(lines))
+    size = len(sharedData.value)
+    data = generatePoints(ratings, sharedData)
 
+    # KMeans
+    start = time()
+    k = int(sys.argv[1])
+    maxIterations = int(sys.argv[2])
+    model = KMeans.train(data, k,
+                maxIterations = maxIterations,
+                initialModel = KMeansModel(generateInitialCentroids(size, k)))
+    end = time()
+    elapsed_time = end - start
+    output = [
+        "Final centers: " + str(model.clusterCenters),
+        "Total Cost: " + str(model.computeCost(data)),
+        "Value of K: " + str(k),
+        "Elapsed time: %0.10f seconds." % elapsed_time
+    ]
+
+    info = sc.parallelize(output)
+    info.saveAsTextFile("hdfs://localhost:9000/user/sebastian/output")
     sc.stop()
