@@ -26,6 +26,8 @@ import numpy as np
 
 from random import random
 from time import time
+from os import path
+from subprocess import call, CalledProcessError
 from pyspark import SparkContext
 from pyspark.mllib.clustering import KMeans, KMeansModel
 
@@ -87,22 +89,27 @@ def createPoint(list, sharedData):
             point[sharedData.value[movieId]] = rating
     return point
 
-# generate the points for the KMeans
 def generatePoints(file, sharedData):
     points = file.map(lambda line: line.split()[1]) \
                 .map(lambda line: line.split(',')) \
                 .map(lambda line: createPoint(line, sharedData))
     return points
 
+def parseOutput(clusterCenters):
+    centroids = map(lambda x: map(str, x), clusterCenters)
+    centroids = map(lambda x: ",".join(x), centroids)
+    return centroids
+
 if __name__ == "__main__":
-    if len(sys.argv) != 3:
-        print("Usage: kmeans <k> <maxIterations>", file=sys.stderr)
+    if len(sys.argv) != 4:
+        print("Usage: kmeans <k> <maxIterations> readCentroids(y/n)", file=sys.stderr)
         exit(-1)
 
     sc = SparkContext(appName="KMeans")
     lines = sc.textFile("hdfs://localhost:9000/user/sebastian/dataset_small/ratings.csv")
 
     # Formatting data
+    dir = path.abspath('..')
     ratings = parseDataset(lines)
     sharedData = sc.broadcast(movieIdList(lines))
     size = len(sharedData.value)
@@ -111,10 +118,19 @@ if __name__ == "__main__":
     # KMeans
     start = time()
     k = int(sys.argv[1])
+    initialCentroids = None
+
+    # Reading initials centroids from hdfs
+    if sys.argv[3] == 'y':
+        initialCentroids = sc.textFile("hdfs://localhost:9000/user/sebastian/dataset_small/centroids")
+        initialCentroids = initialCentroids \
+                            .map(lambda line: np.array([float(n) for n in line.split(',')])) \
+                            .collect()
+    else:
+        initialCentroids = generateInitialCentroids(size, k)
+
     maxIterations = int(sys.argv[2])
-    model = KMeans.train(data, k,
-                maxIterations = maxIterations,
-                initialModel = KMeansModel(generateInitialCentroids(size, k)))
+    model = KMeans.train(data, k, maxIterations = maxIterations, initialModel = KMeansModel(initialCentroids))
     end = time()
     elapsed_time = end - start
     output = [
@@ -124,6 +140,13 @@ if __name__ == "__main__":
         "Elapsed time: %0.10f seconds." % elapsed_time
     ]
 
+    try:
+        call([dir + '/hadoop/bin/hdfs', 'dfs', '-rm', '-r', 'dataset_small/centroids/'])
+    except subprocess.CalledProcessError:
+        pass
+
     info = sc.parallelize(output)
+    centroids = sc.parallelize(parseOutput(model.clusterCenters))
     info.saveAsTextFile("hdfs://localhost:9000/user/sebastian/output")
+    centroids.saveAsTextFile("hdfs://localhost:9000/user/sebastian/dataset_small/centroids")
     sc.stop()
