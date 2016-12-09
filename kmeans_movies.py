@@ -25,7 +25,7 @@ import sys
 import numpy as np
 
 from random import random
-from time import time
+from time import time, strftime
 from os import path
 from subprocess import call, CalledProcessError
 from pyspark import SparkContext
@@ -73,12 +73,12 @@ def movieIdList(file):
 
 # Create a centroid with random valoes from 0 to 5
 def initializeCentroid(size, limit):
-    centroid = np.array([float("{0:.1f}".format(random() * limit)) for i in range(size)])
+    centroid = np.array([float(random() * limit) for i in range(size)])
     return centroid
 
 # Initialize all centroids for the KMeans
 def generateInitialCentroids(size, n):
-    centroids = [initializeCentroid(size, 5) for i in range(n)]
+    centroids = [initializeCentroid(size, 0.005) for i in range(n)]
     return centroids
 
 def createPoint(list, sharedData):
@@ -101,12 +101,32 @@ def parseOutput(clusterCenters):
     return centroids
 
 if __name__ == "__main__":
-    if len(sys.argv) != 4:
-        print("Usage: kmeans <k> <maxIterations> readCentroids(y/n)", file=sys.stderr)
+    offset = 0
+    file = ""
+    currTime = strftime("%x") + '-' + strftime("%X")
+    currTime = currTime.replace('/', '-')
+    currTime = currTime.replace(':', '-')
+
+    if len(sys.argv) != 5 and len(sys.argv) != 7:
+        print("Usage: kmeans <k> <maxIterations> <readCentroids>(y/n) <sizeFile>(small/20m)", file=sys.stderr)
         exit(-1)
 
+    if len(sys.argv) == 5:
+	offset = 0
+	if sys.argv[4] == "small":
+	    file = "small"
+	elif sys.argv[4] == "20m":
+	    file = "20m"
+    elif len(sys.argv) == 7:
+	offset = 2
+        if sys.argv[6] == "small":
+            file = "small"
+        elif sys.argv[6] == "20m":
+            file = "20m"
+
+    # Data from HDFS
     sc = SparkContext(appName="KMeans")
-    lines = sc.textFile("hdfs://localhost:9000/user/sebastian/dataset_small/ratings.csv")
+    lines = sc.textFile("hdfs://masterNode:9000/user/spark/dataset_" + file + "/ratings.csv")
 
     # Formatting data
     dir = path.abspath('..')
@@ -117,19 +137,19 @@ if __name__ == "__main__":
 
     # KMeans
     start = time()
-    k = int(sys.argv[1])
+    k = int(sys.argv[1 + offset])
     initialCentroids = None
 
     # Reading initials centroids from hdfs
-    if sys.argv[3] == 'y':
-        initialCentroids = sc.textFile("hdfs://localhost:9000/user/sebastian/dataset_small/centroids")
+    if sys.argv[3 + offset] == 'y':
+        initialCentroids = sc.textFile("hdfs://masterNode:9000/user/spark/dataset_" + file + "/centroids_" + file)
         initialCentroids = initialCentroids \
                             .map(lambda line: np.array([float(n) for n in line.split(',')])) \
                             .collect()
     else:
         initialCentroids = generateInitialCentroids(size, k)
 
-    maxIterations = int(sys.argv[2])
+    maxIterations = int(sys.argv[2 + offset])
     model = KMeans.train(data, k, maxIterations = maxIterations, initialModel = KMeansModel(initialCentroids))
     end = time()
     elapsed_time = end - start
@@ -137,16 +157,17 @@ if __name__ == "__main__":
         "Final centers: " + str(model.clusterCenters),
         "Total Cost: " + str(model.computeCost(data)),
         "Value of K: " + str(k),
-        "Elapsed time: %0.10f seconds." % elapsed_time
+        "Elapsed time: %0.10f seconds." % elapsed_time,
+	"Iterations: " + str(maxIterations)
     ]
 
     try:
-        call([dir + '/hadoop/bin/hdfs', 'dfs', '-rm', '-r', 'dataset_small/centroids/'])
+        call([dir + '/hadoop/bin/hdfs', 'dfs', '-rm', '-r', 'dataset_' + file + '/centroids_' + file  + '/'])
     except subprocess.CalledProcessError:
         pass
 
     info = sc.parallelize(output)
     centroids = sc.parallelize(parseOutput(model.clusterCenters))
-    info.saveAsTextFile("hdfs://localhost:9000/user/sebastian/output")
-    centroids.saveAsTextFile("hdfs://localhost:9000/user/sebastian/dataset_small/centroids")
+    info.saveAsTextFile("hdfs://masterNode:9000/user/spark/output/kmeans_spark_" + file + "_" + currTime)
+    centroids.saveAsTextFile("hdfs://masterNode:9000/user/spark/dataset_" + file + "/centroids_" + file)
     sc.stop()
