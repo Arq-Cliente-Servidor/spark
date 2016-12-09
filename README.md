@@ -8,3 +8,6 @@ Learning to use spark with python
 * [https://geekytheory.com/apache-spark-que-es-y-como-funciona/](https://geekytheory.com/apache-spark-que-es-y-como-funciona/)
 * [https://districtdatalabs.silvrback.com/getting-started-with-spark-in-python](https://districtdatalabs.silvrback.com/getting-started-with-spark-in-python)
 * [Movies Datasets](http://grouplens.org/datasets/movielens/)
+
+## Slides:
+* [Spark](https://goo.gl/GhUZmR)
